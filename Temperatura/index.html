@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Termostato</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#eef2f1;--panel:#fff;--ink:#14262b;--muted:#5d7176;--line:#d3dcdb;--cold:#0f6b6b;--hot:#c4501b;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#101a1c;--panel:#182427;--ink:#e6efee;--muted:#8fa5a9;--line:#2b3c40;--cold:#4fc3c3;--hot:#ff8a55;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#101a1c;--panel:#182427;--ink:#e6efee;--muted:#8fa5a9;--line:#2b3c40;--cold:#4fc3c3;--hot:#ff8a55;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Familjen Grotesk",system-ui,sans-serif;line-height:1.5}
+main{max-width:860px;margin:0 auto;padding:24px 16px 56px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin-top:16px}
+h2{font-size:1.05rem;margin:0 0 12px}
+.hero{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 28px}
+.temp{font-size:clamp(4rem,18vw,7rem);font-weight:700;line-height:1;letter-spacing:-.03em}
+.temp small{font-size:.4em;font-weight:400;color:var(--muted)}
+.estado{font-weight:600;padding:4px 12px;border-radius:99px;border:1px solid var(--line)}
+.estado.on{color:var(--hot);border-color:var(--hot)}
+.meta{color:var(--muted);font-size:.9rem;width:100%;margin:0}
+svg{width:100%;height:auto;display:block}
+.tabla{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;min-width:520px}
+th,td{padding:8px 10px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{font-weight:600;color:var(--muted);font-size:.85rem}
+.rango{color:var(--muted);font-size:.8rem}
+select,input,button{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+button{background:var(--cold);color:var(--bg);border-color:var(--cold);font-weight:600;cursor:pointer}
+label{display:grid;gap:4px;font-size:.9rem;color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:12px}
+details summary{cursor:pointer;font-weight:600}
+:focus-visible{outline:2px solid var(--cold);outline-offset:2px}
+#msg{margin:10px 0 0;font-size:.9rem}
+</style>
+</head>
+<body>
+<main>
+  <section class="hero" aria-live="polite">
+    <div class="temp"><span id="t">--</span><small>°C</small></div>
+    <span class="estado" id="estado">Sin datos</span>
+    <p class="meta" id="meta"></p>
+  </section>
+
+  <section>
+    <h2>Últimas 24 horas</h2>
+    <div id="grafica" role="img" aria-label="Gráfica de temperatura de las últimas 24 horas"></div>
+  </section>
+
+  <section>
+    <h2>Estadísticas del día</h2>
+    <label style="max-width:200px;margin-bottom:12px">Día<select id="dia"></select></label>
+    <div class="tabla"><table id="tdia"></table></div>
+  </section>
+
+  <section>
+    <h2>Estadísticas mensuales</h2>
+    <div class="tabla"><table id="tmes"></table></div>
+  </section>
+
+  <section>
+    <details id="ctl">
+      <summary>Controlar el termostato</summary>
+      <div class="grid" style="margin-top:14px">
+        <label>Modo
+          <select id="modo"><option value="auto">Automático</option><option value="on">Siempre encendido</option><option value="off">Apagado</option></select>
+        </label>
+        <label>Consigna (°C)<input id="consigna" type="number" step="0.5" min="5" max="35"></label>
+        <label>Histéresis (°C)<input id="hist" type="number" step="0.1" min="0.1" max="5"></label>
+      </div>
+      <div class="grid">
+        <label>Repositorio (usuario/repo)<input id="repo" placeholder="usuario/termostato"></label>
+        <label>Token de GitHub<input id="token" type="password" autocomplete="off" placeholder="fine-grained, Contents: write"></label>
+      </div>
+      <button id="guardar" type="button">Guardar cambios</button>
+      <p id="msg"></p>
+    </details>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const FRANJAS = {madrugada:"Madrugada (0–6 h)", manana:"Mañana (6–12 h)", tarde:"Tarde (12–18 h)", noche:"Noche (18–24 h)"};
+let D = null;
+
+const celda = s => s ? `${s.media.toFixed(1)}° <span class="rango">${s.min.toFixed(1)}–${s.max.toFixed(1)}</span>` : "–";
+const fila = (nombre, s) => `<tr><td>${nombre}</td><td>${celda(s)}</td>${Object.keys(FRANJAS).map(f => `<td>${celda(s.franjas[f])}</td>`).join("")}</tr>`;
+const cabecera = primera => `<tr><th>${primera}</th><th>Total</th>${Object.values(FRANJAS).map(n => `<th>${n}</th>`).join("")}</tr>`;
+
+async function cargar() {
+  try {
+    const r = await fetch("data/temperaturas.json?t=" + Date.now());
+    D = await r.json();
+    pintar();
+  } catch (e) {
+    $("#meta").textContent = "No se pueden cargar los datos todavía.";
+  }
+}
+
+function pintar() {
+  const a = D.actual;
+  if (a) {
+    $("#t").textContent = a.temperatura.toFixed(1);
+    $("#estado").textContent = a.rele ? "Calefacción encendida" : "Calefacción apagada";
+    $("#estado").classList.toggle("on", a.rele);
+    $("#meta").textContent = `Modo ${D.control.modo} · consigna ${D.control.consigna} °C · última lectura ${a.fecha_hora.replace("T", " ")}`;
+  }
+  grafica();
+
+  const dias = Object.keys(D.diario).reverse();
+  const sel = $("#dia"), previo = sel.value;
+  sel.innerHTML = dias.map(d => `<option>${d}</option>`).join("");
+  if (dias.includes(previo)) sel.value = previo;
+  tablaDia();
+
+  $("#tmes").innerHTML = cabecera("Mes") + Object.keys(D.mensual).reverse().map(m => fila(m, D.mensual[m])).join("");
+
+  $("#modo").value = D.control.modo;
+  $("#consigna").value = D.control.consigna;
+  $("#hist").value = D.control.histeresis;
+}
+
+function tablaDia() {
+  const d = $("#dia").value;
+  $("#tdia").innerHTML = D.diario[d] ? cabecera("Día") + fila(d, D.diario[d]) : "";
+}
+
+function grafica() {
+  const p = D.recientes;
+  if (p.length < 2) { $("#grafica").textContent = "Aún no hay suficientes lecturas."; return; }
+  const W = 640, H = 180, m = 28;
+  const v = p.map(x => x[1]);
+  const lo = Math.floor(Math.min(...v, D.control.consigna) - 1), hi = Math.ceil(Math.max(...v, D.control.consigna) + 1);
+  const x = i => m + i * (W - m - 6) / (p.length - 1);
+  const y = t => H - 18 - (t - lo) * (H - 30) / (hi - lo);
+  const linea = p.map((q, i) => `${x(i).toFixed(1)},${y(q[1]).toFixed(1)}`).join(" ");
+  $("#grafica").innerHTML = `<svg viewBox="0 0 ${W} ${H}">
+    <line x1="${m}" x2="${W - 6}" y1="${y(D.control.consigna)}" y2="${y(D.control.consigna)}" stroke="var(--hot)" stroke-dasharray="5 4"/>
+    <polyline points="${linea}" fill="none" stroke="var(--cold)" stroke-width="2.5" stroke-linejoin="round"/>
+    <text x="0" y="${y(hi) + 10}" fill="var(--muted)" font-size="11">${hi}°</text>
+    <text x="0" y="${y(lo)}" fill="var(--muted)" font-size="11">${lo}°</text>
+    <text x="${m}" y="${H - 2}" fill="var(--muted)" font-size="11">${p[0][0].slice(11)}</text>
+    <text x="${W - 6}" y="${H - 2}" fill="var(--muted)" font-size="11" text-anchor="end">${p[p.length - 1][0].slice(11)}</text>
+  </svg>`;
+}
+
+/* ---- Control: edita docs/control.json en GitHub; la Raspberry lo descarga en <1 min ---- */
+function guardado(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } }
+function guardar(k, v) { try { localStorage.setItem(k, v); } catch {} }
+$("#repo").value = guardado("repo");
+$("#token").value = guardado("token");
+
+$("#guardar").onclick = async () => {
+  const repo = $("#repo").value.trim(), token = $("#token").value.trim(), msg = $("#msg");
+  if (!repo || !token) { msg.textContent = "Indica el repositorio y el token."; return; }
+  guardar("repo", repo); guardar("token", token);
+  const url = `https://api.github.com/repos/${repo}/contents/docs/control.json`;
+  const h = {Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json"};
+  const nuevo = {modo: $("#modo").value, consigna: parseFloat($("#consigna").value), histeresis: parseFloat($("#hist").value)};
+  try {
+    const actual = await fetch(url, {headers: h});
+    const sha = actual.ok ? (await actual.json()).sha : undefined;
+    const r = await fetch(url, {method: "PUT", headers: h, body: JSON.stringify({
+      message: "Control desde la web", sha, content: btoa(JSON.stringify(nuevo, null, 2) + "\n")})});
+    msg.textContent = r.ok ? "Guardado. El termostato lo aplicará en menos de un minuto." : `GitHub respondió ${r.status}. Revisa el token y el repositorio.`;
+  } catch { msg.textContent = "No se pudo conectar con GitHub."; }
+};
+
+$("#dia").onchange = tablaDia;
+cargar();
+setInterval(cargar, 300000);
+</script>
+</body>
+</html>
