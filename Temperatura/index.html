@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Temperatura</title>
+<style>
+:root{--bg:#f4f6f5;--panel:#fff;--ink:#14262b;--muted:#5d7176;--line:#d3dcdb;--linea:#0f6b6b;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#101a1c;--panel:#182427;--ink:#e6efee;--muted:#8fa5a9;--line:#2b3c40;--linea:#4fc3c3;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:900px;margin:0 auto;padding:20px 16px}
+header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:4px 16px;margin-bottom:12px}
+h1{font-size:1.1rem;margin:0}
+#ahora{font-size:1.6rem;font-weight:600}
+#info{color:var(--muted);font-size:.85rem}
+.caja{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px}
+svg{width:100%;height:auto;display:block}
+#tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--bg);font-size:.8rem;padding:4px 8px;border-radius:6px;white-space:nowrap;display:none}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Temperatura</h1>
+    <span id="ahora">--</span>
+  </header>
+  <div class="caja" id="caja">
+    <svg id="g" viewBox="0 0 800 340" role="img" aria-label="Gráfico de temperatura"></svg>
+    <div id="tip"></div>
+  </div>
+  <p id="info"></p>
+</main>
+
+<script>
+const W = 800, H = 340, M = {l: 44, r: 14, t: 14, b: 30};
+const svg = document.getElementById("g"), tip = document.getElementById("tip"), caja = document.getElementById("caja");
+const fmt = f => f.slice(8, 10) + "/" + f.slice(5, 7) + " " + f.slice(11, 16);
+let pts = [];
+
+async function cargar() {
+  try {
+    const datos = await (await fetch("temperaturas.json?t=" + Date.now())).json();
+    if (!datos.length) { document.getElementById("info").textContent = "Aún no hay lecturas."; return; }
+    const paso = Math.ceil(datos.length / 1500);                 // máximo ~1500 puntos dibujados
+    pts = datos.filter((_, i) => i % paso === 0 || i === datos.length - 1)
+               .map(d => ({t: new Date(d.fecha_hora).getTime(), v: d.temperatura, f: d.fecha_hora}));
+    const u = datos[datos.length - 1];
+    document.getElementById("ahora").textContent = u.temperatura.toFixed(1) + " °C";
+    document.getElementById("info").textContent = datos.length + " lecturas · última " + fmt(u.fecha_hora);
+    dibujar();
+  } catch {
+    document.getElementById("info").textContent = "No se puede cargar temperaturas.json.";
+  }
+}
+
+function escalas() {
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t || t0 + 1;
+  let lo = Math.floor(Math.min(...pts.map(p => p.v)) - 1), hi = Math.ceil(Math.max(...pts.map(p => p.v)) + 1);
+  return {
+    x: t => M.l + (t - t0) / ((t1 - t0) || 1) * (W - M.l - M.r),
+    y: v => H - M.b - (v - lo) / (hi - lo) * (H - M.t - M.b), lo, hi
+  };
+}
+
+function dibujar() {
+  const e = escalas();
+  let h = "";
+  for (let i = 0; i <= 4; i++) {
+    const v = e.lo + (e.hi - e.lo) * i / 4, y = e.y(v);
+    h += `<line x1="${M.l}" x2="${W - M.r}" y1="${y}" y2="${y}" stroke="var(--line)"/>` +
+         `<text x="${M.l - 6}" y="${y + 4}" text-anchor="end" font-size="12" fill="var(--muted)">${v.toFixed(1)}°</text>`;
+  }
+  const idx = [0, Math.floor((pts.length - 1) / 2), pts.length - 1];
+  idx.forEach((i, k) => {
+    h += `<text x="${e.x(pts[i].t)}" y="${H - 8}" font-size="12" fill="var(--muted)" text-anchor="${k === 0 ? "start" : k === 2 ? "end" : "middle"}">${fmt(pts[i].f)}</text>`;
+  });
+  h += `<polyline fill="none" stroke="var(--linea)" stroke-width="2" stroke-linejoin="round" points="${pts.map(p => e.x(p.t).toFixed(1) + "," + e.y(p.v).toFixed(1)).join(" ")}"/>`;
+  h += `<circle id="pt" r="4" fill="var(--linea)" style="display:none"/>`;
+  svg.innerHTML = h;
+  svg._e = e;
+}
+
+svg.addEventListener("pointermove", ev => {
+  if (!pts.length) return;
+  const r = svg.getBoundingClientRect(), px = (ev.clientX - r.left) / r.width * W, e = svg._e;
+  let mejor = pts[0], d = Infinity;
+  for (const p of pts) { const dd = Math.abs(e.x(p.t) - px); if (dd < d) { d = dd; mejor = p; } }
+  const c = document.getElementById("pt");
+  c.setAttribute("cx", e.x(mejor.t)); c.setAttribute("cy", e.y(mejor.v)); c.style.display = "";
+  tip.textContent = mejor.v.toFixed(1) + " °C · " + fmt(mejor.f);
+  tip.style.display = "block";
+  const cr = caja.getBoundingClientRect();
+  tip.style.left = Math.min(ev.clientX - cr.left + 12, cr.width - tip.offsetWidth - 4) + "px";
+  tip.style.top = (ev.clientY - cr.top - 34) + "px";
+});
+svg.addEventListener("pointerleave", () => { tip.style.display = "none"; const c = document.getElementById("pt"); if (c) c.style.display = "none"; });
+
+cargar();
+setInterval(cargar, 60000);
+</script>
+</body>
+</html>
